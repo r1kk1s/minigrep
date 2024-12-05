@@ -65,28 +65,19 @@ fn print_queried_lines_in_dir_files(file_path: &str, query: &str, ignore_case: b
 
     let entries = match fs::read_dir(file_path) {
         Ok(result) => result,
-        Err(_) => {
-            eprintln!("Не удалось прочитать директорию {file_path}!");
-            return;
-        }
+        Err(_) => return,
     };
 
     for entry in entries {
         let entry: fs::DirEntry = match entry {
             Ok(result) => result,
-            Err(_) => {
-                eprintln!("Не удалось прочитать файл {file_path}!");
-                continue;
-            }
+            Err(_) => continue,
         };
 
         let file = entry.path();
         let path = match file.to_str() {
             Some(value) => value,
-            None => {
-                eprintln!("Не смог прочитать файл {:?}", &file);
-                continue;
-            },
+            None => continue,
         };
         if file.is_dir() {
             print_queried_lines_in_dir_files(path, query, ignore_case, paths_to_ignore)
@@ -99,10 +90,7 @@ fn print_queried_lines_in_dir_files(file_path: &str, query: &str, ignore_case: b
 fn print_queried_lines_in_file(file_path: &str, query: &str, ignore_case: bool) {
     let content: String = match fs::read_to_string(file_path) {
         Ok(value) => value,
-        Err(_) => {
-            eprintln!("Не удалось прочитать файл {file_path}");
-            return ();
-        }
+        Err(_) => return,
     };
 
     let results: Vec<String>;
