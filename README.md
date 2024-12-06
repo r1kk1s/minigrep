@@ -1,8 +1,11 @@
 # minigrep
-`minigrep [flags] <query> <path>`
-## I added only the functionality that I use
-- -r or -R - recursive directory check
-- -i or --ignore - case insensitive
-- --exclude-dir=dont_check_me
+`minigrep [flags] <query> <some_file> <some_dir>`
+- provide query and then as many files or dirs as you wish
 
-you can combine `-ir` or add the same flags several times (`--exclude-dir=dir1 --exclude-dir=dir2`)
+## Available flags
+- case insensitive
+    - `-i`
+    - `--ignore`
+- disable check in dir or path
+    - `--exclude-dir=dont_check_me`
+    - `--not=unnecessary_path`

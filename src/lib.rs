@@ -1,60 +1,60 @@
 use std::fs;
 use std::error::Error;
+use std::collections::VecDeque;
 
 pub struct Config {
     pub query: String,
-    pub file_path: String,
+    pub file_paths: VecDeque<String>,
     pub ignore_case: bool,
-    pub recursive: bool,
     pub paths_to_ignore: Vec<String>,
 }
 
 impl Config {
     pub fn build(args: &[String]) -> Result<Self, &'static str> {
-        let mut common_args: Vec<&String> = Vec::new();
+        let mut common_args: VecDeque<String> = VecDeque::new();
 
         let mut ignore_case: bool = false;
-        let mut recursive: bool = false;
         let mut paths_to_ignore: Vec<String> = Vec::new();
 
         for arg in args {
-            if arg.contains("-") {
-                match arg.as_str() {
-                    "-i" | "--ignore" => ignore_case = true,
-                    "-R" | "-r" => recursive = true,
-                    "-iR" | "-Ri" | "-ri" | "-ir" => {
-                        ignore_case = true;
-                        recursive = true;
-                    },
-                    value if value.contains("--exclude-dir=") => {
-                        let index = value.find("=").expect("already checked") + 1;
-                        paths_to_ignore.push(value[index..].to_string());
-                    },
-                    _ => (),
-                }
-            } else {
-                common_args.push(arg);
+            match arg.as_str() {
+                "-i" | "--ignore" => ignore_case = true,
+                value if value.contains("--exclude-dir=") || value.contains("-not=") => {
+                    let index = value.find("=").expect("already checked") + 1;
+                    paths_to_ignore.push(value[index..].to_string());
+                },
+                _ => common_args.push_back(arg.to_string()),
             }
         }
 
-        if common_args.len() != 3 {
+        if common_args.len() < 3 {
             return Err("Вы должны передать запрос и путь к файлу!");
         }
 
-        let query: String = common_args[1].clone();
-        let file_path: String = common_args[2].clone();
+        let _ = common_args.pop_front();
+        let query: String = common_args.pop_front().expect("already checked");
 
-        Ok(Self { query, file_path, ignore_case, recursive, paths_to_ignore })
+        Ok(Self { query, file_paths: common_args, ignore_case, paths_to_ignore })
     }
 }
 
 pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
-    if config.recursive {
-        print_queried_lines_in_dir_files(&config.file_path, &config.query, config.ignore_case, &config.paths_to_ignore);
-    } else {
-        print_queried_lines_in_file(&config.file_path, &config.query, config.ignore_case);
-    };
+    for file in config.file_paths {
+        let path = match fs::canonicalize(&file) {
+            Ok(result) => result,
+            Err(_) => return Ok(()),
+        };
 
+        if config.paths_to_ignore.contains(&file) {
+            return Ok(())
+        };
+
+        if path.is_dir() {
+            print_queried_lines_in_dir_files(&file, &config.query, config.ignore_case, &config.paths_to_ignore);
+        } else if path.is_file() {
+            print_queried_lines_in_file(&file, &config.query, config.ignore_case);
+        }
+    }
     Ok(())
 }
 
