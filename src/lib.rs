@@ -1,139 +1,143 @@
-use std::fs;
-use std::error::Error;
 use std::collections::VecDeque;
+use std::fs;
+use std::path::PathBuf;
+use std::thread;
 
 pub struct Config {
     pub query: String,
-    pub file_paths: VecDeque<String>,
+    pub file_paths: Vec<PathBuf>,
     pub ignore_case: bool,
-    pub paths_to_ignore: Vec<String>,
+    pub paths_to_ignore: Vec<PathBuf>,
 }
 
 impl Config {
-    pub fn build(args: &[String]) -> Result<Self, &'static str> {
-        let mut common_args: VecDeque<String> = VecDeque::new();
+    pub fn build(mut args: impl Iterator<Item = String>) -> Result<Self, &'static str> {
+        args.next();
 
+        let mut common_args: VecDeque<String> = VecDeque::new();
         let mut ignore_case: bool = false;
-        let mut paths_to_ignore: Vec<String> = Vec::new();
+        let mut paths_to_ignore = Vec::new();
 
         for arg in args {
-            match arg.as_str() {
-                "-i" | "--ignore" => ignore_case = true,
-                value if value.contains("--exclude-dir=") || value.contains("-not=") => {
-                    let index = value.find("=").expect("already checked") + 1;
-                    paths_to_ignore.push(value[index..].to_string());
-                },
-                _ => common_args.push_back(arg.to_string()),
+            if let "-i" | "--ignore" = arg.as_str() {
+                ignore_case = true;
+            } else if let Some(path) = arg
+                .strip_prefix("-not=")
+                .or_else(|| arg.strip_prefix("--exclude-dir="))
+            {
+                if let Ok(path) = fs::canonicalize(path) {
+                    paths_to_ignore.push(path);
+                }
+            } else {
+                common_args.push_back(arg.to_string());
             }
         }
 
-        if common_args.len() < 3 {
+        if common_args.len() < 2 {
             return Err("Вы должны передать запрос и путь к файлу!");
         }
 
-        let _ = common_args.pop_front();
         let query: String = common_args.pop_front().expect("already checked");
 
-        Ok(Self { query, file_paths: common_args, ignore_case, paths_to_ignore })
+        let mut file_paths = Vec::new();
+
+        for path in common_args {
+            if let Ok(path) = fs::canonicalize(path) {
+                file_paths.push(path)
+            }
+        }
+
+        Ok(Self {
+            query,
+            file_paths,
+            ignore_case,
+            paths_to_ignore,
+        })
     }
 }
 
-pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
-    for file in config.file_paths {
-        let path = match fs::canonicalize(&file) {
-            Ok(result) => result,
-            Err(_) => return Ok(()),
-        };
+pub struct Grep {
+    pub config: Config,
+}
 
-        if config.paths_to_ignore.contains(&file) {
-            return Ok(())
-        };
+impl Grep {
+    pub fn run<'scope, 'env>(&'scope self, scope: &'scope thread::Scope<'scope, 'env>) {
+        for file in &self.config.file_paths {
+            if self.config.paths_to_ignore.contains(file) {
+                continue;
+            };
 
-        if path.is_dir() {
-            print_queried_lines_in_dir_files(&file, &config.query, config.ignore_case, &config.paths_to_ignore);
-        } else if path.is_file() {
-            print_queried_lines_in_file(&file, &config.query, config.ignore_case);
+            if file.is_dir() {
+                self.print_queried_lines_in_dir_files(file, scope);
+            } else if file.is_file() {
+                self.print_queried_lines_in_file(file);
+            };
         }
     }
-    Ok(())
-}
 
-fn print_queried_lines_in_dir_files(file_path: &str, query: &str, ignore_case: bool, paths_to_ignore: &Vec<String>) {
-    if paths_to_ignore.contains(&file_path.to_string()) {
-        return;
+    fn print_queried_lines_in_dir_files<'scope, 'env>(
+        &'scope self,
+        dir_name: &PathBuf,
+        scope: &'scope thread::Scope<'scope, 'env>,
+    ) {
+        if self.config.paths_to_ignore.contains(&dir_name) {
+            return;
+        }
+
+        let entries = match fs::read_dir(dir_name) {
+            Ok(result) => result,
+            Err(_) => return,
+        };
+
+        for entry in entries {
+            let file = match entry {
+                Ok(result) => result.path(),
+                Err(_) => continue,
+            };
+
+            if file.is_dir() {
+                scope.spawn(move || self.print_queried_lines_in_dir_files(&file, scope));
+            } else if file.is_file() {
+                scope.spawn(move || self.print_queried_lines_in_file(&file));
+            }
+        }
     }
 
-    let entries = match fs::read_dir(file_path) {
-        Ok(result) => result,
-        Err(_) => return,
-    };
-
-    for entry in entries {
-        let entry: fs::DirEntry = match entry {
-            Ok(result) => result,
-            Err(_) => continue,
+    fn print_queried_lines_in_file(&self, file_path: &PathBuf) {
+        let content: String = match fs::read_to_string(file_path) {
+            Ok(value) => value,
+            Err(_) => return,
         };
 
-        let file = entry.path();
-        let path = match file.to_str() {
-            Some(value) => value,
-            None => continue,
-        };
-        if file.is_dir() {
-            print_queried_lines_in_dir_files(path, query, ignore_case, paths_to_ignore)
+        let results: Vec<&str>;
+
+        if self.config.ignore_case {
+            results = search_case_insensetive(&self.config.query, &content);
         } else {
-            print_queried_lines_in_file(path, query, ignore_case);
+            results = search(&self.config.query, &content);
+        };
+
+        if !results.is_empty() {
+            println!("{file_path:?}");
+            for result in results {
+                println!("{result}");
+            }
         }
     }
 }
 
-fn print_queried_lines_in_file(file_path: &str, query: &str, ignore_case: bool) {
-    let content: String = match fs::read_to_string(file_path) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-
-    let results: Vec<String>;
-
-    if ignore_case {
-        results = search_case_insensetive(query, &content);
-    } else {
-        results = search(query, &content);
-    };
-
-    if !results.is_empty() {
-        println!("{file_path}");
-        for result in results {
-            println!("{result}");
-        }
-    }
+fn search<'a>(query: &str, content: &'a str) -> Vec<&'a str> {
+    content
+        .lines()
+        .filter(|line| line.contains(query))
+        .collect()
 }
 
-pub fn search(query: &str, content: &str) -> Vec<String> {
-    let mut result = Vec::new();
-
-    for (row, line) in content.lines().enumerate() {
-        match line.find(&query) {
-            Some(column) => result.push(format!("{row}:{column} {line}")),
-            None => continue,
-        };
-    }
-
-    result
-}
-
-pub fn search_case_insensetive(query: &str, content: &str) -> Vec<String> {
-    let query = query.to_lowercase();
-    let mut result = Vec::new();
-
-    for (row, line) in content.lines().enumerate() {
-        match line.to_lowercase().find(&query) {
-            Some(column) => result.push(format!("{row}:{column} {line}")),
-            None => continue,
-        };
-    }
-
-    result
+fn search_case_insensetive<'a>(query: &str, content: &'a str) -> Vec<&'a str> {
+    content
+        .lines()
+        .filter(|line| line.to_lowercase().contains(&query.to_lowercase()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -149,7 +153,7 @@ safe, fast, productive.
 Pick three.
 Duct tape.";
 
-        assert_eq!(vec!["1:15 safe, fast, productive."], search(query, content));
+        assert_eq!(vec!["safe, fast, productive."], search(query, content));
     }
 
     #[test]
@@ -161,6 +165,9 @@ safe, fast, productive.
 Pick three.
 Trust me.";
 
-        assert_eq!(vec!["0:0 Rust:", "3:1 Trust me."], search_case_insensetive(query, content));
+        assert_eq!(
+            vec!["Rust:", "Trust me."],
+            search_case_insensetive(query, content)
+        );
     }
 }
